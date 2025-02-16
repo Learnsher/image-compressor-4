@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>圖像壓縮工具</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            content: ['./index.html'],
+            theme: {
+                extend: {}
+            }
+        }
+    </script>
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@4.6.1/dist/full.min.css" rel="stylesheet" type="text/css" />
+    <!-- 引入 CompressorJS 庫 -->
+    <script src="https://unpkg.com/compressorjs@1.2.1/dist/compressor.min.js"></script>
+    <!-- 引入 UPNG 庫 -->
+    <script src="https://unpkg.com/upng@1.0.0/dist/upng.min.js"></script>
+    <script src="libs/UPNG.js"></script>
+    <script src="libs/pako.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="format-detection" content="telephone=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+</head>
+<body class="dark bg-gray-900 text-gray-100 min-h-screen flex flex-col items-center justify-center p-4" data-theme="dark">
+    <div class="w-full max-w-7xl">
+        
+        <div id="dropzone" class="border-2 border-dashed border-primary rounded-lg p-6 text-center cursor-pointer hover:bg-base-200 transition-colors">
+            <p class="text-base-content">拖放或點擊選擇圖像檔案 (PNG/JPG/JPEG/WebP)</p>
+            <input type="file" id="fileInput" multiple accept=".png,.jpg,.jpeg,.webp" class="hidden">
+        </div>
+
+        <div id="compressionSettings" class="mt-6">
+            <div class="flex items-center space-x-4">
+                <label for="qualitySlider" class="flex-grow">壓縮品質：<span id="qualityValue" class="text-primary">80</span>%</label>
+                <input type="range" id="qualitySlider" min="10" max="100" value="80" step="1" class="range range-primary w-full">
+            </div>
+        </div>
+
+        <div id="preview" class="grid grid-cols-2 md:grid-cols-5 gap-4 mt-6"></div>
+
+        <button id="compressButton" class="btn btn-primary w-full mt-6" disabled>開始壓縮</button>
+
+        <button id="shareButton" class="btn btn-accent w-full mt-4" disabled>分享壓縮圖像</button>
+
+        <div id="errorContainer" class="alert alert-error shadow-lg mt-4 hidden"></div>
+
+        <div id="progressContainer" class="w-full bg-base-200 rounded-lg mt-4 hidden">
+            <div id="progressBar" class="bg-primary text-primary-content text-center p-2 rounded-lg"></div>
+        </div>
+
+        <div id="compressionProgressContainer" class="w-full bg-base-200 rounded-lg mt-4 hidden">
+            <div id="compressionProgressBar" class="bg-primary text-primary-content text-center p-2 rounded-lg"></div>
+        </div>
+        <div id="compressionProgressDetails" class="text-sm text-base-content mt-2"></div>
+
+        <div id="estimatedTimeContainer" class="text-sm text-base-content mt-4 text-center hidden">
+            預估壓縮時間：<span id="estimatedTimeText">--</span>
+            剩餘時間：<span id="countdownTimer" class="font-bold text-primary">--</span>
+        </div>
+    </div>
+
+    <script>
+        const dropzone = document.getElementById('dropzone');
+        const fileInput = document.getElementById('fileInput');
+        const preview = document.getElementById('preview');
+        const compressButton = document.getElementById('compressButton');
+        const shareButton = document.getElementById('shareButton');
+        const qualitySlider = document.getElementById('qualitySlider');
+        const qualityValue = document.getElementById('qualityValue');
+        const errorContainer = document.getElementById('errorContainer');
+        const progressContainer = document.getElementById('progressContainer');
+        const progressBar = document.getElementById('progressBar');
+        const compressionProgressContainer = document.getElementById('compressionProgressContainer');
+        const compressionProgressBar = document.getElementById('compressionProgressBar');
+        const compressionProgressDetails = document.getElementById('compressionProgressDetails');
+        const estimatedTimeText = document.getElementById('estimatedTimeText');
+        const countdownTimer = document.getElementById('countdownTimer');
+        const estimatedTimeContainer = document.getElementById('estimatedTimeContainer');
+
+        let selectedFiles = [];
+
+        // 品質滑桿即時更新
+        qualitySlider.addEventListener('input', (e) => {
+            qualityValue.textContent = e.target.value;
+            qualityValue.classList.add('text-primary');
+        });
+
+        // 重構文件選擇和拖放邏輯
+        // 清除預覽
+        function clearPreview() {
+            preview.innerHTML = '';
+            compressButton.disabled = true;
+            shareButton.disabled = true;
+        }
+
+        // 驗證文件類型
+        function isValidFileType(file) {
+            const validTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
+            return validTypes.includes(file.type);
+        }
+
+        // 創建預覽
+        function createFilePreview(file) {
+            if (!isValidFileType(file)) {
+                alert(`不支持的文件類型: ${file.type}`);
+                return null;
+            }
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const previewItem = document.createElement('div');
+                previewItem.className = 'card bg-base-200 shadow-md p-4 text-center relative';
+                previewItem.dataset.filename = file.name;
+
+                const img = document.createElement('img');
+                img.src = e.target.result;
+                img.className = 'w-full h-40 object-contain rounded-lg mb-4 bg-base-200';
+
+                const fileInfo = document.createElement('div');
+                fileInfo.className = 'text-sm';
+                fileInfo.innerHTML = `
+                    <p class="font-semibold text-base-content">${file.name}</p>
+                    <p class="text-base-content/70">${formatFileSize(file.size)}</p>
+                `;
+
+                const deleteButton = document.createElement('button');
+                deleteButton.innerHTML = `
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-[30px] h-[30px] text-error hover:text-error-content transition-colors">
+                        <path fill-rule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25Zm-1.72 6.97a.75.75 0 1 0-1.06 1.06L10.94 12l-1.72 1.72a.75.75 0 1 0 1.06 1.06L12 13.06l1.72 1.72a.75.75 0 1 0 1.06-1.06L13.06 12l1.72-1.72a.75.75 0 1 0-1.06-1.06L12 10.94l-1.72-1.72a.75.75 0 1 0-1.06 1.06L10.94 12l-1.72 1.72Z" clip-rule="evenodd" />
+                    </svg>
+                `;
+                deleteButton.className = 'absolute top-2 right-2 btn btn-circle btn-ghost p-0 w-[40px] h-[40px] min-h-0 hover:bg-error/10';
+                deleteButton.setAttribute('aria-label', '刪除圖像');
+                deleteButton.onclick = () => {
+                    preview.removeChild(previewItem);
+                    updateCompressButton();
+                };
+
+                previewItem.appendChild(deleteButton);
+                previewItem.appendChild(img);
+                previewItem.appendChild(fileInfo);
+
+                preview.appendChild(previewItem);
+                updateCompressButton();
+            };
+            reader.readAsDataURL(file);
+        }
+
+        // 更新壓縮按鈕狀態
+        function updateCompressButton() {
+            const previewItems = document.querySelectorAll('#preview .card').length;
+            compressButton.disabled = previewItems === 0;
+            shareButton.disabled = previewItems === 0;
+        }
+
+        // 處理文件選擇
+        fileInput.addEventListener('change', (e) => {
+            clearPreview();
+            Array.from(e.target.files).forEach(createFilePreview);
+        });
+
+        // 拖放事件處理
+        dropzone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropzone.classList.add('dragover');
+        });
+
+        dropzone.addEventListener('dragleave', () => {
+            dropzone.classList.remove('dragover');
+        });
+
+        dropzone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropzone.classList.remove('dragover');
+            
+            const files = e.dataTransfer.files;
+            clearPreview();
+            Array.from(files).forEach(createFilePreview);
+        });
+
+        // 點擊dropzone觸發文件選擇
+        dropzone.addEventListener('click', () => {
+            fileInput.click();
+        });
+
+        // 進度條平滑更新函數
+        function smoothProgressUpdate(progressBar, startValue, endValue, duration) {
+            return new Promise(resolve => {
+                const startTime = performance.now();
+                
+                function updateProgress(currentTime) {
+                    const elapsedTime = currentTime - startTime;
+                    const progress = Math.min(elapsedTime / duration, 1);
+                    
+                    // 使用平滑的 easing 函數（平方緩和）
+                    const smoothProgress = progress < 0.5 
+                        ? 2 * progress * progress 
+                        : -1 + (4 - 2 * progress) * progress;
+                    
+                    const currentValue = startValue + (endValue - startValue) * smoothProgress;
+                    
+                    progressBar.style.width = `${currentValue}%`;
+                    progressBar.textContent = `${Math.round(currentValue)}%`;
+                    
+                    if (progress < 1) {
+                        requestAnimationFrame(updateProgress);
+                    } else {
+                        progressBar.style.width = `${endValue}%`;
+                        progressBar.textContent = `${Math.round(endValue)}%`;
+                        resolve();
+                    }
+                }
+                
+                requestAnimationFrame(updateProgress);
+            });
+        }
+
+        // 極速 PNG 壓縮函數
+        function fastPngCompression(rgba, width, height, qualityLevel) {
+            // 預定義調色板大小，根據質量級別選擇
+            const paletteSizes = [2, 16, 64, 128, 256];
+            
+            // 根據質量平滑映射到調色板索引
+            const paletteIndex = Math.min(
+                paletteSizes.length - 1, 
+                Math.floor(qualityLevel * paletteSizes.length)
+            );
+            
+            const paletteSize = paletteSizes[paletteIndex];
+
+            try {
+                // 快速單次編碼
+                return {
+                    png: UPNG.encode([rgba], width, height, paletteSize),
+                    compressedSize: null  // 不計算具體大小
+                };
+            } catch (error) {
+                console.warn('快速 PNG 壓縮失敗:', error);
+                // 保底方案：使用最小調色板
+                return {
+                    png: UPNG.encode([rgba], width, height, 2),
+                    compressedSize: null
+                };
+            }
+        }
+
+        // 替換原有的精確壓縮函數
+        function compressPngToTargetSize(rgba, width, height, targetSizeKB, qualityLevel) {
+            return fastPngCompression(rgba, width, height, qualityLevel);
+        }
+
+        // 高級 PNG 壓縮函數
+        async function advancedPngCompression(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                const qualityLevel = parseInt(qualitySlider.value) / 100;
+
+                reader.onload = async function(e) {
+                    try {
+                        const arrayBuffer = e.target.result;
+                        const uint8Array = new Uint8Array(arrayBuffer);
+
+                        // 設置原始檔案大小
+                        const originalSize = file.size / 1024;
+                        const originalSizeSpan = document.getElementById('originalSize');
+                        originalSizeSpan && (originalSizeSpan.textContent = originalSize.toFixed(2));
+
+                        // 解碼 PNG
+                        const decoded = UPNG.decode(uint8Array);
+                        const originalWidth = decoded.width;
+                        const originalHeight = decoded.height;
+
+                        // 將圖像轉換為 RGBA8
+                        const rgba8 = UPNG.toRGBA8(decoded)[0] || uint8Array;
+
+                        // 使用極速壓縮
+                        const compressResult = compressPngToTargetSize(
+                            rgba8, 
+                            originalWidth, 
+                            originalHeight, 
+                            51200 / 1024,  // 50KB 目標（僅保留）
+                            qualityLevel
+                        );
+
+                        // 將壓縮後的 PNG 轉換為 Blob
+                        const compressedBlob = new Blob([compressResult.png], { type: 'image/png' });
+
+                        // 計算壓縮率（近似）
+                        const compressedSize = compressedBlob.size / 1024;
+                        const compressionRate = ((1 - compressedSize / originalSize) * 100);
+
+                        // 更新估算大小
+                        const estimatedSizeSpan = document.getElementById('estimatedSize');
+                        estimatedSizeSpan && (estimatedSizeSpan.textContent = compressedSize.toFixed(2));
+                        const sizeReductionSpan = document.getElementById('sizeReduction');
+                        sizeReductionSpan && (sizeReductionSpan.textContent = compressionRate.toFixed(2));
+
+                        resolve(compressedBlob);
+                    } catch (error) {
+                        console.error('PNG 壓縮失敗:', error);
+                        // 如果壓縮失敗，返回原始文件
+                        resolve(new Blob([uint8Array], { type: 'image/png' }));
+                    }
+                };
+
+                reader.onerror = (error) => {
+                    console.error('文件讀取失敗:', error);
+                    const fallbackBlob = new Blob([file], { type: 'image/png' });
+                    resolve(fallbackBlob);
+                };
+
+                reader.readAsArrayBuffer(file);
+            });
+        }
+
+        // 時間估算函數
+        function estimateCompressionTime(fileSize) {
+            const baseTime = 0.5;  // 基礎時間
+            const timePerMB = 1;   // 每 MB 的估算時間
+            
+            const estimatedSeconds = baseTime + (fileSize / (1024 * 1024)) * timePerMB;
+            
+            return {
+                min: Math.max(estimatedSeconds * 0.8, 1),
+                max: estimatedSeconds * 1.2
+            };
+        }
+
+        // 倒數計時器
+        function startCountdown(totalSeconds) {
+            let remainingSeconds = totalSeconds;
+            
+            const countdownInterval = setInterval(() => {
+                if (remainingSeconds <= 0) {
+                    clearInterval(countdownInterval);
+                    countdownTimer.textContent = '0';
+                    return;
+                }
+                
+                countdownTimer.textContent = remainingSeconds;
+                remainingSeconds--;
+            }, 1000);
+
+            return countdownInterval;
+        }
+
+        // 確保所有必要的 DOM 元素
+        const fileInfoContainer = document.getElementById('fileInfoContainer');
+        const fileNameSpan = document.getElementById('fileName');
+
+        // 移除多餘的檔案資訊顯示函數
+        function updateFileInfo(file) {
+            if (!file) return;
+
+            // 僅更新檔名
+            const fileNameSpan = document.getElementById('fileName');
+            fileNameSpan && (fileNameSpan.textContent = file.name || '--');
+        }
+
+        // 通用壓縮函數，支援非 PNG 檔案
+        async function compressImage(file, qualityLevel = 0.7) {
+            return new Promise((resolve, reject) => {
+                // 檢查是否為 PNG
+                if (file.type === 'image/png') {
+                    const reader = new FileReader();
+                    reader.onload = function(e) {
+                        const img = new Image();
+                        img.onload = function() {
+                            const canvas = document.createElement('canvas');
+                            const ctx = canvas.getContext('2d');
+                            canvas.width = img.width;
+                            canvas.height = img.height;
+                            ctx.drawImage(img, 0, 0, img.width, img.height);
+                            
+                            // 將 canvas 轉換為 WebP
+                            canvas.toBlob((blob) => {
+                                const compressedFile = new File([blob], file.name.replace('.png', '.webp'), {
+                                    type: 'image/webp',
+                                    lastModified: Date.now()
+                                });
+                                resolve(compressedFile);
+                            }, 'image/webp', qualityLevel);
+                        };
+                        img.src = e.target.result;
+                    };
+                    reader.readAsDataURL(file);
+                } 
+                // 對於 JPEG 和 WebP
+                else if (['image/jpeg', 'image/jpg', 'image/webp'].includes(file.type)) {
+                    new Compressor(file, {
+                        quality: qualityLevel,
+                        convertSize: Infinity, // 防止自動轉換
+                        success(result) {
+                            resolve(result);
+                        },
+                        error(err) {
+                            reject(err);
+                        }
+                    });
+                } 
+                else {
+                    reject(new Error('不支持的圖像格式'));
+                }
+            });
+        }
+
+        // 文件大小格式化函數
+        function formatFileSize(sizeInBytes) {
+            const sizeInKB = sizeInBytes / 1024;
+            const sizeInMB = sizeInKB / 1024;
+            
+            if (sizeInMB >= 1) {
+                return `${sizeInMB.toFixed(2)} MB`;
+            } else {
+                return `${sizeInKB.toFixed(2)} KB`;
+            }
+        }
+
+        // 文件選擇事件
+        function fileInputHandler(event) {
+            // 立即清除預覽
+            preview.innerHTML = '';
+
+            const files = event.target.files;
+            const allowedTypes = ['image/png', 'image/jpeg', 'image/webp'];
+
+            // 使用 for 循環替代 forEach，確保精確控制
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+
+                // 嚴格類型驗證
+                if (!allowedTypes.includes(file.type)) {
+                    errorContainer.textContent = '不支援的檔案類型';
+                    errorContainer.style.display = 'block';
+                    continue;
+                }
+
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    const img = document.createElement('img');
+                    img.src = e.target.result;
+                    
+                    const qualityLevel = parseInt(qualitySlider.value) / 100;
+                    const originalSize = file.size / 1024;  // KB
+                    const estimatedSize = originalSize;
+
+                    const previewItem = createFilePreview(file, e.target.result);
+                    
+                    preview.appendChild(previewItem);
+
+                    // 僅第一次上傳時啟用按鈕
+                    if (i === 0) {
+                        compressButton.disabled = false;
+                        shareButton.disabled = false;
+                    }
+                };
+
+                reader.onerror = function() {
+                    console.error('檔案讀取失敗', file.name);
+                    errorContainer.textContent = '檔案讀取失敗';
+                    errorContainer.style.display = 'block';
+                };
+
+                reader.readAsDataURL(file);
+            }
+
+            // 重置錯誤容器
+            errorContainer.textContent = '';
+            errorContainer.style.display = 'none';
+        }
+
+        function showError(message) {
+            const errorContainer = document.getElementById('errorContainer');
+            errorContainer.textContent = message;
+            errorContainer.classList.remove('hidden');
+        }
+
+        function hideError() {
+            const errorContainer = document.getElementById('errorContainer');
+            errorContainer.textContent = '';
+            errorContainer.classList.add('hidden');
+        }
+
+        function updateProgressBar(progress) {
+            const progressBar = document.getElementById('progressBar');
+            progressBar.style.width = `${progress}%`;
+            progressBar.textContent = `${progress}%`;
+            document.getElementById('progressContainer').classList.remove('hidden');
+        }
+
+        function updateCompressionProgressBar(progress) {
+            const compressionProgressBar = document.getElementById('compressionProgressBar');
+            compressionProgressBar.style.width = `${progress}%`;
+            compressionProgressBar.textContent = `${progress}%`;
+            document.getElementById('compressionProgressContainer').classList.remove('hidden');
+        }
+
+        // 添加 JSZip 庫
+        const script = document.createElement('script');
+        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+        document.head.appendChild(script);
+
+        async function downloadCompressedFiles() {
+            const files = fileInput.files;
+            if (files.length === 0) {
+                errorContainer.textContent = '請選擇檔案';
+                errorContainer.style.display = 'block';
+                return;
+            }
+
+            try {
+                if (files.length === 1) {
+                    // 單個文件直接下載
+                    let compressedBlob;
+                    if (files[0].type === 'image/png') {
+                        compressedBlob = await advancedPngCompression(files[0]);
+                    } else {
+                        compressedBlob = await compressImage(files[0]);
+                    }
+
+                    const downloadLink = document.createElement('a');
+                    downloadLink.href = URL.createObjectURL(compressedBlob);
+                    downloadLink.download = `compressed_${files[0].name}`;
+                    
+                    document.body.appendChild(downloadLink);
+                    downloadLink.click();
+                    document.body.removeChild(downloadLink);
+                } else {
+                    // 多個文件打包成 ZIP
+                    const zip = new JSZip();
+                    
+                    for (let file of files) {
+                        let compressedBlob;
+                        if (file.type === 'image/png') {
+                            compressedBlob = await advancedPngCompression(file);
+                        } else {
+                            compressedBlob = await compressImage(file);
+                        }
+                        
+                        zip.file(`compressed_${file.name}`, compressedBlob);
+                    }
+
+                    const zipBlob = await zip.generateAsync({ type: 'blob' });
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(zipBlob);
+                    link.download = '壓縮圖像.zip';
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                }
+            } catch (error) {
+                console.error('下載錯誤:', error);
+                errorContainer.textContent = '下載失敗，請重試';
+                errorContainer.style.display = 'block';
+            }
+        }
+
+        async function compressImages() {
+            const files = fileInput.files;
+            if (files.length === 0) {
+                errorContainer.textContent = '請選擇檔案';
+                errorContainer.style.display = 'block';
+                return;
+            }
+
+            // 禁用按鈕防止重複點擊
+            compressButton.disabled = true;
+            shareButton.disabled = true;
+            fileInput.disabled = true;
+            errorContainer.style.display = 'none';
+
+            try {
+                for (let i = 0; i < files.length; i++) {
+                    const file = files[i];
+                    
+                    // 更新整體進度
+                    const overallProgress = Math.round(((i + 1) / files.length) * 100);
+                    progressBar.style.width = `${overallProgress}%`;
+                    progressBar.textContent = `${overallProgress}%`;
+
+                    // 壓縮邏輯
+                    let compressedBlob;
+                    if (file.type === 'image/png') {
+                        compressedBlob = await advancedPngCompression(file);
+                    } else {
+                        compressedBlob = await compressImage(file);
+                    }
+
+                    // 顯示實際輸出大小
+                    const sizeDisplay = document.createElement('p');
+                    sizeDisplay.className = 'text-sm text-base-content/70';
+                    sizeDisplay.innerHTML = `壓縮後: <span>${formatFileSize(compressedBlob.size)}</span>`;
+                    sizeDisplay.classList.add('size-display');
+
+                    // 找到對應的預覽元素並附加大小資訊
+                    const previewElement = document.querySelector(`[data-filename="${file.name}"]`);
+                    if (previewElement) {
+                        // 移除之前可能存在的大小顯示
+                        const existingSizeDisplay = previewElement.querySelector('.size-display');
+                        if (existingSizeDisplay) {
+                            existingSizeDisplay.remove();
+                        }
+                        
+                        // 添加新的大小顯示
+                        previewElement.appendChild(sizeDisplay);
+                    }
+                }
+
+                // 壓縮完成後立即下載
+                await downloadCompressedFiles();
+            } catch (error) {
+                console.error('壓縮過程出錯:', error);
+                errorContainer.textContent = '壓縮過程出現錯誤';
+                errorContainer.style.display = 'block';
+            } finally {
+                // 恢復按鈕狀態
+                compressButton.disabled = false;
+                shareButton.disabled = false;
+                fileInput.disabled = false;
+            }
+        }
+
+        compressButton.addEventListener('click', compressImages);
+
+        // 檢測設備和瀏覽器
+        function getDeviceType() {
+            const ua = navigator.userAgent.toLowerCase();
+            return {
+                isMobile: /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(ua),
+                isWindows: /windows/i.test(ua),
+                isChrome: /chrome/i.test(ua) && /google inc\./i.test(navigator.vendor),
+                isSafari: /safari/i.test(ua) && /apple computer/i.test(navigator.vendor)
+            };
+        }
+
+        // 原生分享功能
+        async function shareCompressedFiles() {
+            const compressedFiles = document.querySelectorAll('#preview .card');
+            
+            if (compressedFiles.length === 0) {
+                errorContainer.textContent = '請先壓縮圖像';
+                errorContainer.style.display = 'block';
+                return;
+            }
+
+            const device = getDeviceType();
+
+            try {
+                // 準備分享的文件
+                const shareFiles = [];
+                const defaultMessage = "使用圖片壓縮工具生成的圖片";
+                const userMessage = "給您的訊息 https://www.youtube.com/";
+                
+                for (let i = 0; i < compressedFiles.length; i++) {
+                    const fileCard = compressedFiles[i];
+                    const img = fileCard.querySelector('img');
+                    const fileName = fileCard.querySelector('p').textContent;
+
+                    // 重新壓縮圖像以確保分享的是壓縮版本
+                    const response = await fetch(img.src);
+                    const originalBlob = await response.blob();
+                    
+                    let compressedBlob;
+                    if (originalBlob.type === 'image/png') {
+                        compressedBlob = await advancedPngCompression(new File([originalBlob], fileName, { type: 'image/png' }));
+                    } else {
+                        compressedBlob = await compressImage(new File([originalBlob], fileName, { type: originalBlob.type }));
+                    }
+
+                    // 如果是最後一張圖像，添加文字水印
+                    if (i === compressedFiles.length - 1) {
+                        const canvas = document.createElement('canvas');
+                        const ctx = canvas.getContext('2d');
+                        const img = new Image();
+                        img.src = URL.createObjectURL(compressedBlob);
+                        
+                        await new Promise(resolve => {
+                            img.onload = () => {
+                                canvas.width = img.width;
+                                canvas.height = img.height + 200; // 額外空間用於文字
+                                
+                                // 繪製原始圖像
+                                ctx.drawImage(img, 0, 0);
+                                
+                                // 添加預設訊息水印
+                                ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                                ctx.fillRect(0, img.height, canvas.width, 100);
+                                
+                                ctx.fillStyle = 'white';
+                                ctx.font = '24px Arial';
+                                ctx.textAlign = 'center';
+                                ctx.fillText(defaultMessage, canvas.width / 2, img.height + 60);
+
+                                // 添加用戶自定義訊息水印
+                                ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                                ctx.fillRect(0, img.height + 100, canvas.width, 100);
+                                
+                                ctx.fillStyle = 'white';
+                                ctx.font = '24px Arial';
+                                ctx.textAlign = 'center';
+                                ctx.fillText(userMessage, canvas.width / 2, img.height + 160);
+                                
+                                // 將畫布轉換為 Blob
+                                canvas.toBlob(blob => {
+                                    compressedBlob = blob;
+                                    resolve();
+                                }, compressedBlob.type);
+                            };
+                        });
+                    }
+
+                    const shareFile = new File([compressedBlob], fileName, { type: compressedBlob.type });
+                    shareFiles.push(shareFile);
+                }
+
+                // 分享策略
+                if (navigator.canShare && navigator.canShare({ files: shareFiles })) {
+                    // 原生 Web Share API
+                    await navigator.share({
+                        title: '壓縮圖像',
+                        text: `${defaultMessage}\n${userMessage}`,
+                        files: shareFiles
+                    });
+                } else if (device.isWindows && device.isChrome) {
+                    // Windows Chrome 的替代方案
+                    const downloadLinks = shareFiles.map(file => {
+                        const link = document.createElement('a');
+                        link.href = URL.createObjectURL(file);
+                        link.download = file.name;
+                        return link;
+                    });
+
+                    // 彈出分享選單
+                    const shareModal = document.createElement('div');
+                    shareModal.innerHTML = `
+                        <div class="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center">
+                            <div class="bg-white p-6 rounded-lg max-w-md w-full">
+                                <h2 class="text-xl font-bold mb-4">分享壓縮圖像</h2>
+                                <div class="mb-4">
+                                    <p class="text-sm text-gray-600">${defaultMessage}</p>
+                                    <p class="text-sm text-gray-600">${userMessage}</p>
+                                </div>
+                                <div id="shareModalContent" class="space-y-2"></div>
+                                <button id="closeShareModal" class="btn btn-primary w-full mt-4">關閉</button>
+                            </div>
+                        </div>
+                    `;
+                    document.body.appendChild(shareModal);
+
+                    const modalContent = shareModal.querySelector('#shareModalContent');
+                    downloadLinks.forEach(link => {
+                        const button = document.createElement('button');
+                        button.textContent = link.download;
+                        button.className = 'btn btn-outline w-full';
+                        button.onclick = () => {
+                            document.body.appendChild(link);
+                            link.click();
+                            document.body.removeChild(link);
+                        };
+                        modalContent.appendChild(button);
+                    });
+
+                    shareModal.querySelector('#closeShareModal').onclick = () => {
+                        document.body.removeChild(shareModal);
+                    };
+                } else {
+                    // 通用下載方案
+                    await downloadCompressedFiles();
+                }
+            } catch (error) {
+                console.error('分享錯誤:', error);
+                errorContainer.textContent = '分享失敗，請重試';
+                errorContainer.style.display = 'block';
+            }
+        }
+
+        // 初始化分享按鈕
+        function initShareButton() {
+            const shareButton = document.getElementById('shareButton');
+            const device = getDeviceType();
+            
+            // 在移動設備或 Windows Chrome 上顯示
+            if (!device.isMobile && !(device.isWindows && device.isChrome)) {
+                shareButton.style.display = 'none';
+                return;
+            }
+
+            // 更新按鈕狀態
+            function updateShareButton() {
+                const compressedFiles = document.querySelectorAll('#preview .card');
+                shareButton.disabled = compressedFiles.length === 0;
+            }
+
+            // 綁定事件
+            shareButton.addEventListener('click', shareCompressedFiles);
+
+            // 監聽預覽變化
+            const observer = new MutationObserver(updateShareButton);
+            observer.observe(document.getElementById('preview'), { 
+                childList: true 
+            });
+
+            // 初始狀態
+            updateShareButton();
+        }
+
+        // 頁面加載時初始化
+        document.addEventListener('DOMContentLoaded', initShareButton);
+
+        // 添加簡單的 CSS
+        const styleTag = document.createElement('style');
+        styleTag.textContent = `
+        .preview-item {
+            position: relative;
+            border: 1px solid #ddd;
+            margin: 10px;
+            padding: 10px;
+            display: inline-block;
+            text-align: center;
+        }
+
+        .delete-preview-item {
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            background: transparent;
+            border: none;
+            cursor: pointer;
+        }
+        `;
+        document.head.appendChild(styleTag);
+    </script>
+</body>
+</html>
