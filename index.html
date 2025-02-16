@@ -130,12 +130,13 @@
                 const deleteButton = document.createElement('button');
                 deleteButton.innerHTML = `
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-[30px] h-[30px] text-error hover:text-error-content transition-colors">
-                        <path fill-rule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25Zm-1.72 6.97a.75.75 0 1 0-1.06 1.06L10.94 12l-1.72 1.72a.75.75 0 1 0 1.06 1.06L12 13.06l1.72 1.72a.75.75 0 1 0 1.06-1.06L13.06 12l1.72-1.72a.75.75 0 1 0-1.06-1.06L12 10.94l-1.72-1.72a.75.75 0 1 0-1.06 1.06L10.94 12l-1.72 1.72Z" clip-rule="evenodd" />
+                        <path fill-rule="evenodd" d="M12 2.25c-5.385 0-9.75 4.365-9.75 9.75s4.365 9.75 9.75 9.75 9.75-4.365 9.75-9.75S17.385 2.25 12 2.25Zm-1.72 6.97a.75.75 0 1 0-1.06 1.06L10.94 12l-1.72 1.72a.75.75 0 1 0 1.06 1.06L12 13.06l1.72 1.72a.75.75 0 1 0 1.06-1.06L13.06 12l1.72-1.72a.75.75 0 1 0-1.06-1.06L12 10.94l-1.72-1.72Z" clip-rule="evenodd" />
                     </svg>
                 `;
                 deleteButton.className = 'absolute top-2 right-2 btn btn-circle btn-ghost p-0 w-[40px] h-[40px] min-h-0 hover:bg-error/10';
                 deleteButton.setAttribute('aria-label', '刪除圖像');
                 deleteButton.onclick = () => {
+                    // 移除預覽項目
                     preview.removeChild(previewItem);
                     updateCompressButton();
                 };
@@ -560,8 +561,9 @@
         }
 
         async function compressImages() {
-            const files = fileInput.files;
-            if (files.length === 0) {
+            // 從預覽中獲取當前存在的文件
+            const previewItems = document.querySelectorAll('#preview .card');
+            if (previewItems.length === 0) {
                 errorContainer.textContent = '請選擇檔案';
                 errorContainer.style.display = 'block';
                 return;
@@ -574,11 +576,27 @@
             errorContainer.style.display = 'none';
 
             try {
-                for (let i = 0; i < files.length; i++) {
-                    const file = files[i];
+                // 重置進度容器
+                progressContainer.style.display = 'block';
+                progressBar.style.width = '0%';
+                progressBar.textContent = '0%';
+
+                const compressedFiles = [];
+
+                for (let i = 0; i < previewItems.length; i++) {
+                    const previewItem = previewItems[i];
+                    const filename = previewItem.dataset.filename;
                     
+                    // 找到對應的文件
+                    const file = Array.from(fileInput.files).find(f => f.name === filename);
+                    
+                    if (!file) {
+                        console.warn(`未找到文件: ${filename}`);
+                        continue;
+                    }
+
                     // 更新整體進度
-                    const overallProgress = Math.round(((i + 1) / files.length) * 100);
+                    const overallProgress = Math.round(((i + 1) / previewItems.length) * 100);
                     progressBar.style.width = `${overallProgress}%`;
                     progressBar.textContent = `${overallProgress}%`;
 
@@ -592,26 +610,31 @@
 
                     // 顯示實際輸出大小
                     const sizeDisplay = document.createElement('p');
-                    sizeDisplay.className = 'text-sm text-base-content/70';
+                    sizeDisplay.className = 'text-sm text-base-content/70 size-display';
                     sizeDisplay.innerHTML = `壓縮後: <span>${formatFileSize(compressedBlob.size)}</span>`;
-                    sizeDisplay.classList.add('size-display');
 
-                    // 找到對應的預覽元素並附加大小資訊
-                    const previewElement = document.querySelector(`[data-filename="${file.name}"]`);
-                    if (previewElement) {
-                        // 移除之前可能存在的大小顯示
-                        const existingSizeDisplay = previewElement.querySelector('.size-display');
-                        if (existingSizeDisplay) {
-                            existingSizeDisplay.remove();
-                        }
-                        
-                        // 添加新的大小顯示
-                        previewElement.appendChild(sizeDisplay);
+                    // 移除之前可能存在的大小顯示
+                    const existingSizeDisplay = previewItem.querySelector('.size-display');
+                    if (existingSizeDisplay) {
+                        existingSizeDisplay.remove();
                     }
+                    
+                    // 添加新的大小顯示
+                    previewItem.appendChild(sizeDisplay);
+
+                    // 保存壓縮文件
+                    compressedFiles.push(new File([compressedBlob], filename, { type: file.type }));
                 }
 
-                // 壓縮完成後立即下載
-                await downloadCompressedFiles();
+                // 如果有壓縮的文件，則下載
+                if (compressedFiles.length > 0) {
+                    // 更新 fileInput 的文件列表
+                    const dataTransfer = new DataTransfer();
+                    compressedFiles.forEach(file => dataTransfer.items.add(file));
+                    fileInput.files = dataTransfer.files;
+
+                    await downloadCompressedFiles();
+                }
             } catch (error) {
                 console.error('壓縮過程出錯:', error);
                 errorContainer.textContent = '壓縮過程出現錯誤';
@@ -621,6 +644,7 @@
                 compressButton.disabled = false;
                 shareButton.disabled = false;
                 fileInput.disabled = false;
+                progressContainer.style.display = 'none';
             }
         }
 
@@ -648,15 +672,15 @@
             }
 
             const device = getDeviceType();
+            const shareMessage = "ABCDEF 可以更好 https://www.youtube.com/";
 
             try {
                 // 準備分享的文件
                 const shareFiles = [];
-                const defaultMessage = "使用圖片壓縮工具生成的圖片";
-                const userMessage = "給您的訊息 https://www.youtube.com/";
+                const fileCount = compressedFiles.length;
                 
-                for (let i = 0; i < compressedFiles.length; i++) {
-                    const fileCard = compressedFiles[i];
+                for (let index = 0; index < fileCount; index++) {
+                    const fileCard = compressedFiles[index];
                     const img = fileCard.querySelector('img');
                     const fileName = fileCard.querySelector('p').textContent;
 
@@ -671,8 +695,9 @@
                         compressedBlob = await compressImage(new File([originalBlob], fileName, { type: originalBlob.type }));
                     }
 
-                    // 如果是最後一張圖像，添加文字水印
-                    if (i === compressedFiles.length - 1) {
+                    // 如果是最後一張圖像，添加文字
+                    if (index === fileCount - 1) {
+                        // 創建畫布以添加文字水印
                         const canvas = document.createElement('canvas');
                         const ctx = canvas.getContext('2d');
                         const img = new Image();
@@ -680,31 +705,18 @@
                         
                         await new Promise(resolve => {
                             img.onload = () => {
-                                // 根據圖像大小動態調整字體大小和畫布高度
-                                const baseFontSize = Math.max(16, Math.min(img.width / 30, 36));
-                                const canvasExtraHeight = baseFontSize * 3;
-
                                 canvas.width = img.width;
-                                canvas.height = img.height + canvasExtraHeight;
+                                canvas.height = img.height + 100; // 額外空間用於文字
                                 
                                 // 繪製原始圖像
                                 ctx.drawImage(img, 0, 0);
                                 
-                                // 添加預設訊息水印 - 漸變背景
-                                const gradient = ctx.createLinearGradient(0, img.height, canvas.width, img.height + canvasExtraHeight);
-                                gradient.addColorStop(0, '#FF5A5F');   // 橙紅色
-                                gradient.addColorStop(1, '#FF385C');   // 深紅色
-                                
-                                ctx.fillStyle = gradient;
-                                ctx.fillRect(0, img.height, canvas.width, canvasExtraHeight);
-                                
-                                // 水印文字
-                                ctx.fillStyle = '#FFFFFF';
-                                ctx.font = `${baseFontSize}px Arial`;
+                                // 添加文字
+                                ctx.fillStyle = 'black';
+                                ctx.font = '20px Arial';
                                 ctx.textAlign = 'center';
-                                ctx.fillText(defaultMessage, canvas.width / 2, img.height + canvasExtraHeight / 2);
+                                ctx.fillText(shareMessage, canvas.width / 2, img.height + 50);
                                 
-                                // 將畫布轉換為 Blob
                                 canvas.toBlob(blob => {
                                     compressedBlob = blob;
                                     resolve();
@@ -722,7 +734,7 @@
                     // 原生 Web Share API
                     await navigator.share({
                         title: '壓縮圖像',
-                        text: userMessage,
+                        text: shareMessage,
                         files: shareFiles
                     });
                 } else if (device.isWindows && device.isChrome) {
@@ -740,10 +752,8 @@
                         <div class="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center">
                             <div class="bg-white p-6 rounded-lg max-w-md w-full">
                                 <h2 class="text-xl font-bold mb-4">分享壓縮圖像</h2>
-                                <div class="mb-4">
-                                    <p class="text-sm text-gray-600">${userMessage}</p>
-                                </div>
                                 <div id="shareModalContent" class="space-y-2"></div>
+                                <div class="mt-4 text-center text-sm text-gray-600">${shareMessage}</div>
                                 <button id="closeShareModal" class="btn btn-primary w-full mt-4">關閉</button>
                             </div>
                         </div>
